@@ -43,7 +43,10 @@ DEF MAP_SIZE_POW2 = 16
 DEF MAP_SIZE = 1 << MAP_SIZE_POW2
 
 from cpython.exc cimport PyErr_SetFromErrno
+from cpython.exc cimport PyErr_SetFromErrnoWithFilenameObject
 from libc cimport errno
+from libc.string cimport memcpy
+from libc.stdio cimport FILE, fopen, fread, printf
 from libc.signal cimport SIG_DFL
 from libc.stddef cimport size_t
 from libc.stdint cimport uint32_t
@@ -123,8 +126,10 @@ def excepthook(tp, value, traceback):
 
 cdef bint init_done = False
 cdef bint tstl_mode = False
+cdef char buf[MAP_SIZE]
+cdef FILE* p
 
-cdef int _init(bint persistent_mode) except -1:
+cdef int _init(bint persistent_mode, bint remote_trace) except -1:
     global afl_area, init_done, tstl_mode
     tstl_mode = os.getenv('PYTHON_AFL_TSTL') is not None
     use_forkserver = True
@@ -167,6 +172,14 @@ cdef int _init(bint persistent_mode) except -1:
         os.write(FORKSRV_FD + 1, struct.pack('I', child_pid))
         (child_pid, status) = os.waitpid(child_pid, os.WUNTRACED if persistent_mode else 0)
         child_stopped = os.WIFSTOPPED(status)
+        ## write remote trace_bits
+        if remote_trace:
+            p = fopen("trace_bits", "rb")
+            if p is NULL:
+                PyErr_SetFromErrnoWithFilenameObject(OSError, "trace_bits")
+            if afl_area:
+                fread(buf, 1, MAP_SIZE, p)
+                memcpy(afl_area, buf, MAP_SIZE)
         os.write(FORKSRV_FD + 1, struct.pack('I', status))
     if use_forkserver:
         rc = sigaction(signal.SIGCHLD, &old_sigchld, NULL)
@@ -182,10 +195,11 @@ cdef int _init(bint persistent_mode) except -1:
     afl_area = shmat(int(afl_shm_id), NULL, 0)
     if afl_area == <void*> -1:
         PyErr_SetFromErrno(OSError)
-    sys.settrace(trace)
+    if not remote_trace:
+        sys.settrace(trace)
     return 0
 
-def init():
+def init(remote_trace=False):
     '''
     init()
 
@@ -194,14 +208,14 @@ def init():
     This function should be called as late as possible,
     but before the input is read.
     '''
-    _init(persistent_mode=False)
+    _init(persistent_mode=False, remote_trace=False)
 
 def start():
     '''
     deprecated alias for afl.init()
     '''
     warnings.warn('afl.start() is deprecated, use afl.init() instead', DeprecationWarning)
-    _init(persistent_mode=False)
+    _init(persistent_mode=False, remote_trace=False)
 
 cdef bint persistent_allowed = False
 cdef unsigned long persistent_counter = 0
@@ -220,7 +234,7 @@ def loop(max=None):
     prev_location = 0
     if persistent_counter == 0:
         persistent_allowed = os.getenv('PYTHON_AFL_PERSISTENT') is not None
-        _init(persistent_mode=persistent_allowed)
+        _init(persistent_mode=persistent_allowed, remote_trace=False)
         persistent_counter = 1
         return True
     cont = persistent_allowed and (
