@@ -46,7 +46,7 @@ from cpython.exc cimport PyErr_SetFromErrno
 from cpython.exc cimport PyErr_SetFromErrnoWithFilenameObject
 from libc cimport errno
 from libc.string cimport memcpy
-from libc.stdio cimport FILE, fopen, fread, printf
+from libc.stdio cimport FILE, fopen, fread, fprintf, fclose, fwrite
 from libc.signal cimport SIG_DFL
 from libc.stddef cimport size_t
 from libc.stdint cimport uint32_t
@@ -129,7 +129,7 @@ cdef bint tstl_mode = False
 cdef char buf[MAP_SIZE]
 cdef FILE* p
 
-cdef int _init(bint persistent_mode, bint remote_trace) except -1:
+cdef int _init(bint remote_trace, bint persistent_mode) except -1:
     global afl_area, init_done, tstl_mode
     tstl_mode = os.getenv('PYTHON_AFL_TSTL') is not None
     use_forkserver = True
@@ -151,6 +151,13 @@ cdef int _init(bint persistent_mode, bint remote_trace) except -1:
     dfl_sigchld.sa_sigaction = NULL
     dfl_sigchld.sa_flags = 0
     sigemptyset(&dfl_sigchld.sa_mask)
+    cdef const char * afl_shm_id = getenv(SHM_ENV_VAR)
+    if afl_shm_id == NULL:
+        return 0
+    afl_area = shmat(int(afl_shm_id), NULL, 0)
+    if afl_area == <void*> -1:
+        PyErr_SetFromErrno(OSError)
+    afl_area[0] = 1
     if use_forkserver:
         rc = sigaction(signal.SIGCHLD, &dfl_sigchld, &old_sigchld)
         if rc:
@@ -173,13 +180,14 @@ cdef int _init(bint persistent_mode, bint remote_trace) except -1:
         (child_pid, status) = os.waitpid(child_pid, os.WUNTRACED if persistent_mode else 0)
         child_stopped = os.WIFSTOPPED(status)
         ## write remote trace_bits
-        if remote_trace:
-            p = fopen("trace_bits", "rb")
-            if p is NULL:
-                PyErr_SetFromErrnoWithFilenameObject(OSError, "trace_bits")
-            if afl_area:
+        if remote_trace != 0:
+            if os.path.exists("trace_bits"):
+                p = fopen("trace_bits", "rb")
+                if p is NULL:
+                    PyErr_SetFromErrnoWithFilenameObject(OSError, "trace_bits")
                 fread(buf, 1, MAP_SIZE, p)
                 memcpy(afl_area, buf, MAP_SIZE)
+                fclose(p)
         os.write(FORKSRV_FD + 1, struct.pack('I', status))
     if use_forkserver:
         rc = sigaction(signal.SIGCHLD, &old_sigchld, NULL)
@@ -189,33 +197,27 @@ cdef int _init(bint persistent_mode, bint remote_trace) except -1:
         os.close(FORKSRV_FD + 1)
     if except_signal_id != 0:
         sys.excepthook = excepthook
-    cdef const char * afl_shm_id = getenv(SHM_ENV_VAR)
-    if afl_shm_id == NULL:
-        return 0
-    afl_area = shmat(int(afl_shm_id), NULL, 0)
-    if afl_area == <void*> -1:
-        PyErr_SetFromErrno(OSError)
     if not remote_trace:
         sys.settrace(trace)
     return 0
 
 def init(remote_trace=False):
     '''
-    init()
+    init(remote_trace=False)
 
     Start the fork server and enable instrumentation.
 
     This function should be called as late as possible,
     but before the input is read.
     '''
-    _init(persistent_mode=False, remote_trace=False)
+    _init(remote_trace, persistent_mode=False)
 
 def start():
     '''
     deprecated alias for afl.init()
     '''
     warnings.warn('afl.start() is deprecated, use afl.init() instead', DeprecationWarning)
-    _init(persistent_mode=False, remote_trace=False)
+    _init(remote_trace=False, persistent_mode=False)
 
 cdef bint persistent_allowed = False
 cdef unsigned long persistent_counter = 0
@@ -234,7 +236,7 @@ def loop(max=None):
     prev_location = 0
     if persistent_counter == 0:
         persistent_allowed = os.getenv('PYTHON_AFL_PERSISTENT') is not None
-        _init(persistent_mode=persistent_allowed, remote_trace=False)
+        _init(remote_trace=False, persistent_mode=persistent_allowed)
         persistent_counter = 1
         return True
     cont = persistent_allowed and (
