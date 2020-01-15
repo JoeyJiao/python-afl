@@ -2,6 +2,7 @@
 export AFL_SKIP_CHECKS=1 # AFL << 1.20b
 export AFL_SKIP_BIN_CHECK=1 # AFL >= 1.20b
 export AFL_DUMB_FORKSRV=1
+export AFL_REMOTE_TRACE=1
 if [ -n "$PYTHON_AFL_DUMB" ]
 then
     # shellcheck disable=SC2016
