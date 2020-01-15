@@ -47,7 +47,6 @@ from cpython.exc cimport PyErr_SetFromErrno
 from cpython.exc cimport PyErr_SetFromErrnoWithFilenameObject
 from libc cimport errno
 from libc.string cimport memcpy
-from libc.stdio cimport FILE, fopen, fread, fprintf, fclose, fwrite
 from libc.signal cimport SIG_DFL
 from libc.stddef cimport size_t
 from libc.stdint cimport uint32_t
@@ -200,9 +199,9 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
             PyErr_SetFromErrno(OSError)
         os.close(FORKSRV_FD)
         os.close(FORKSRV_FD + 1)
-    if except_signal_id != 0:
-        sys.excepthook = excepthook
     if not remote_trace:
+        if except_signal_id != 0:
+            sys.excepthook = excepthook
         sys.settrace(trace)
     return 0
 
