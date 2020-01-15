@@ -35,6 +35,7 @@ import signal
 import struct
 import sys
 import warnings
+import socket
 
 # These constants must be kept in sync with afl-fuzz:
 DEF SHM_ENV_VAR = b'__AFL_SHM_ID'
@@ -126,8 +127,6 @@ def excepthook(tp, value, traceback):
 
 cdef bint init_done = False
 cdef bint tstl_mode = False
-cdef char buf[MAP_SIZE]
-cdef FILE* p
 
 cdef int _init(bint remote_trace, bint persistent_mode) except -1:
     global afl_area, init_done, tstl_mode
@@ -162,6 +161,15 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
         rc = sigaction(signal.SIGCHLD, &dfl_sigchld, &old_sigchld)
         if rc:
             PyErr_SetFromErrno(OSError)
+        server_address = str(os.getpid())
+        try:
+            os.unlink(server_address)
+        except OSError:
+            if os.path.exists(server_address):
+                raise
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(server_address)
+        sock.listen(1)
     while use_forkserver:
         [child_killed] = struct.unpack('I', os.read(FORKSRV_FD, 4))
         if child_stopped and child_killed:
@@ -181,13 +189,10 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
         child_stopped = os.WIFSTOPPED(status)
         ## write remote trace_bits
         if remote_trace != 0:
-            if os.path.exists("trace_bits"):
-                p = fopen("trace_bits", "rb")
-                if p is NULL:
-                    PyErr_SetFromErrnoWithFilenameObject(OSError, "trace_bits")
-                fread(buf, 1, MAP_SIZE, p)
-                memcpy(afl_area, buf, MAP_SIZE)
-                fclose(p)
+            conn, client = sock.accept()
+            buf = conn.recv(MAP_SIZE)
+            memcpy(afl_area, <void*>buf, MAP_SIZE)
+            conn.close()
         os.write(FORKSRV_FD + 1, struct.pack('I', status))
     if use_forkserver:
         rc = sigaction(signal.SIGCHLD, &old_sigchld, NULL)
