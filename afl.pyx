@@ -131,13 +131,14 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
     global afl_area, init_done, tstl_mode
     tstl_mode = os.getenv('PYTHON_AFL_TSTL') is not None
     use_forkserver = True
-    try:
-        os.write(FORKSRV_FD + 1, b'\0\0\0\0')
-    except OSError as exc:
-        if exc.errno == errno.EBADF:
-            use_forkserver = False
-        else:
-            raise
+    if use_forkserver:
+        try:
+            os.write(FORKSRV_FD + 1, b'\0\0\0\0')
+        except OSError as exc:
+            if exc.errno == errno.EBADF:
+                use_forkserver = False
+            else:
+                raise
     if init_done:
         raise RuntimeError('AFL already initialized')
     init_done = True
@@ -156,21 +157,22 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
     if afl_area == <void*> -1:
         PyErr_SetFromErrno(OSError)
     afl_area[0] = 1
-    if use_forkserver:
+    server_address = str(os.getpid())
+    try:
+        os.unlink(server_address)
+    except OSError:
+        if os.path.exists(server_address):
+            raise
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(server_address)
+    sock.listen(1)
+    if use_forkserver and not remote_trace:
         rc = sigaction(signal.SIGCHLD, &dfl_sigchld, &old_sigchld)
         if rc:
             PyErr_SetFromErrno(OSError)
-        server_address = str(os.getpid())
-        try:
-            os.unlink(server_address)
-        except OSError:
-            if os.path.exists(server_address):
-                raise
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.bind(server_address)
-        sock.listen(1)
     while use_forkserver:
-        [child_killed] = struct.unpack('I', os.read(FORKSRV_FD, 4))
+        buf = os.read(FORKSRV_FD, 4)
+        [child_killed] = struct.unpack('I', buf)
         if child_stopped and child_killed:
             os.waitpid(child_pid, 0)
             child_stopped = False
@@ -184,16 +186,18 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
                 break
         # parent:
         os.write(FORKSRV_FD + 1, struct.pack('I', child_pid))
-        (child_pid, status) = os.waitpid(child_pid, os.WUNTRACED if persistent_mode else 0)
-        child_stopped = os.WIFSTOPPED(status)
         ## write remote trace_bits
         if remote_trace != 0:
             conn, client = sock.accept()
             buf = conn.recv(MAP_SIZE)
             memcpy(afl_area, <void*>buf, MAP_SIZE)
             conn.close()
+        (child_pid, status) = os.waitpid(child_pid, os.WUNTRACED if persistent_mode else 0)
+        if '00' in hex(status):
+            status = int(hex(status).replace('00', ''), 16)
+        child_stopped = os.WIFSTOPPED(status)
         os.write(FORKSRV_FD + 1, struct.pack('I', status))
-    if use_forkserver:
+    if use_forkserver and not remote_trace:
         rc = sigaction(signal.SIGCHLD, &old_sigchld, NULL)
         if rc:
             PyErr_SetFromErrno(OSError)
@@ -214,7 +218,7 @@ def init(remote_trace=False):
     This function should be called as late as possible,
     but before the input is read.
     '''
-    _init(remote_trace, persistent_mode=False)
+    _init(remote_trace=remote_trace, persistent_mode=False)
 
 def start():
     '''
@@ -226,7 +230,7 @@ def start():
 cdef bint persistent_allowed = False
 cdef unsigned long persistent_counter = 0
 
-def loop(max=None):
+def loop(max=None, remote_trace=False):
     '''
     while loop([max]):
         ...
@@ -240,7 +244,7 @@ def loop(max=None):
     prev_location = 0
     if persistent_counter == 0:
         persistent_allowed = os.getenv('PYTHON_AFL_PERSISTENT') is not None
-        _init(remote_trace=False, persistent_mode=persistent_allowed)
+        _init(remote_trace=remote_trace, persistent_mode=persistent_allowed)
         persistent_counter = 1
         return True
     cont = persistent_allowed and (
