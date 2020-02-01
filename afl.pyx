@@ -195,13 +195,13 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
         ## write remote trace_bits
         if remote_trace:
             sock.settimeout(1)
-            conn, client = sock.accept()
             try:
+                conn, client = sock.accept()
                 buf = conn.recv(MAP_SIZE)
                 memcpy(afl_area, <void*>buf, MAP_SIZE)
+                conn.close()
             except socket.timeout:
                 sock.settimeout(None)
-            conn.close()
         os.write(FORKSRV_FD + 1, struct.pack('I', status))
     if use_forkserver and not remote_trace:
         rc = sigaction(signal.SIGCHLD, &old_sigchld, NULL)
