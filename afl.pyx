@@ -157,7 +157,7 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
     if afl_area == <void*> -1:
         PyErr_SetFromErrno(OSError)
     afl_area[0] = 1
-    server_address = str(os.getpid())
+    server_address = 'socket' + os.sep + str(os.getpid())
     try:
         os.unlink(server_address)
     except OSError:
