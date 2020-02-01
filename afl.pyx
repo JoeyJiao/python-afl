@@ -186,16 +186,22 @@ cdef int _init(bint remote_trace, bint persistent_mode) except -1:
                 break
         # parent:
         os.write(FORKSRV_FD + 1, struct.pack('I', child_pid))
-        ## write remote trace_bits
-        if remote_trace != 0:
-            conn, client = sock.accept()
-            buf = conn.recv(MAP_SIZE)
-            memcpy(afl_area, <void*>buf, MAP_SIZE)
-            conn.close()
         (child_pid, status) = os.waitpid(child_pid, os.WUNTRACED if persistent_mode else 0)
         if '00' in hex(status):
             status = int(hex(status).replace('00', ''), 16)
         child_stopped = os.WIFSTOPPED(status)
+        if child_stopped:
+            print("child_stopped", child_stopped)
+        ## write remote trace_bits
+        if remote_trace:
+            sock.settimeout(1)
+            conn, client = sock.accept()
+            try:
+                buf = conn.recv(MAP_SIZE)
+                memcpy(afl_area, <void*>buf, MAP_SIZE)
+            except socket.timeout:
+                sock.settimeout(None)
+            conn.close()
         os.write(FORKSRV_FD + 1, struct.pack('I', status))
     if use_forkserver and not remote_trace:
         rc = sigaction(signal.SIGCHLD, &old_sigchld, NULL)
